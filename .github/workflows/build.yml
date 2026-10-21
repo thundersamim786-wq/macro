@@ -32,37 +32,57 @@ jobs:
         run: |
           flutter create . --platforms=android --org=com.macro --project-name=macro_automator --overwrite
 
-      - name: Inject Accessibility and PiP
+      - name: Configure Android Native Files via Python
         run: |
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          python3 - << 'EOF'
+          import os
 
-          # 1. Inject PiP and layout flags into MainActivity
-          sed -i '/<activity/a \            android:supportsPictureInPicture="true"\n            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"' "$MANIFEST"
+          # 1. Update AndroidManifest.xml
+          manifest_path = "android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path, "r") as f:
+            content = f.read()
 
-          # 2. Register MacroAccessibilityService inside <application>
-          SERVICE_BLOCK='        <service\n            android:name=".MacroAccessibilityService"\n            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"\n            android:exported="true">\n            <intent-filter>\n                <action android:name="android.accessibilityservice.AccessibilityService" />\n            </intent-filter>\n            <meta-data\n                android:name="android.accessibilityservice.AccessibilityService"\n                android:resource="@xml/accessibility_service_config" />\n        </service>'
-          sed -i "s|</application>|${SERVICE_BLOCK}\n    </application>|" "$MANIFEST"
+          pip_flags = 'android:supportsPictureInPicture="true"\n            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"\n'
+          if 'supportsPictureInPicture' not in content:
+            content = content.replace('<activity', '<activity\n            ' + pip_flags)
 
-          # 3. Create accessibility configuration XML
-          mkdir -p android/app/src/main/res/xml
-          cat << 'EOF' > android/app/src/main/res/xml/accessibility_service_config.xml
-          <?xml version="1.0" encoding="utf-8"?>
+          service_entry = """
+                  <service
+                      android:name=".MacroAccessibilityService"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice.AccessibilityService"
+                          android:resource="@xml/accessibility_service_config" />
+                  </service>
+              </application>"""
+          if 'MacroAccessibilityService' not in content:
+            content = content.replace('</application>', service_entry)
+
+          with open(manifest_path, "w") as f:
+            f.write(content)
+
+          # 2. Create accessibility XML
+          os.makedirs("android/app/src/main/res/xml", exist_ok=True)
+          xml_content = """<?xml version="1.0" encoding="utf-8"?>
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
               android:accessibilityEventTypes="typeAllMask"
               android:accessibilityFeedbackType="feedbackGeneric"
               android:accessibilityFlags="flagDefault"
               android:canPerformGestures="true"
               android:canRetrieveWindowContent="true"
-              android:notificationTimeout="100" />
-          EOF
+              android:notificationTimeout="100" />"""
+          with open("android/app/src/main/res/xml/accessibility_service_config.xml", "w") as f:
+            f.write(xml_content.strip())
 
-          # 4. Create package folder for Kotlin code
-          KOTLIN_DIR="android/app/src/main/kotlin/com/macro/macro_automator"
-          mkdir -p "$KOTLIN_DIR"
+          # 3. Write Kotlin files
+          kotlin_dir = "android/app/src/main/kotlin/com/macro/macro_automator"
+          os.makedirs(kotlin_dir, exist_ok=True)
 
-          # 5. Write MainActivity.kt
-          cat << 'EOF' > "$KOTLIN_DIR/MainActivity.kt"
-          package com.macro.macro_automator
+          main_activity = """package com.macro.macro_automator
 
           import android.app.PictureInPictureParams
           import android.content.Intent
@@ -109,12 +129,11 @@ jobs:
                       }
                   }
               }
-          }
-          EOF
+          }"""
+          with open(os.path.join(kotlin_dir, "MainActivity.kt"), "w") as f:
+            f.write(main_activity)
 
-          # 6. Write MacroAccessibilityService.kt
-          cat << 'EOF' > "$KOTLIN_DIR/MacroAccessibilityService.kt"
-          package com.macro.macro_automator
+          service_code = """package com.macro.macro_automator
 
           import android.accessibilityservice.AccessibilityService
           import android.accessibilityservice.GestureDescription
@@ -148,7 +167,10 @@ jobs:
                   super.onDestroy()
                   instance = null
               }
-          }
+          }"""
+          with open(os.path.join(kotlin_dir, "MacroAccessibilityService.kt"), "w") as f:
+            f.write(service_code)
+          print("Native configuration successfully injected!")
           EOF
 
       - name: Fetch Dependencies
