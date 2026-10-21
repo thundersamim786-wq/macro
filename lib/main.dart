@@ -2,206 +2,190 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 void main() {
-  runApp(const MacroAutoApp());
+  runApp(const MacroApp());
 }
 
-class MacroAutoApp extends StatelessWidget {
-  const MacroAutoApp({super.key});
+class MacroApp extends StatelessWidget {
+  const MacroApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Macro Touch Automator',
+      title: 'macro',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
-        colorSchemeSeed: Colors.deepPurple,
+        colorSchemeSeed: Colors.amber,
         useMaterial3: true,
       ),
-      home: const MacroHomePage(),
+      home: const MacroDashboard(),
     );
   }
 }
 
-class MacroHomePage extends StatefulWidget {
-  const MacroHomePage({super.key});
+class MacroDashboard extends StatefulWidget {
+  const MacroDashboard({super.key});
 
   @override
-  State<MacroHomePage> createState() => _MacroHomePageState();
+  State<MacroDashboard> createState() => _MacroDashboardState();
 }
 
-class _MacroHomePageState extends State<MacroHomePage> {
-  static const MethodChannel _platform = MethodChannel('com.macro.automator/actions');
+class _MacroDashboardState extends State<MacroDashboard> with WidgetsBindingObserver {
+  static const MethodChannel _channel = MethodChannel('com.macro.automator/actions');
 
   bool _isAccessibilityEnabled = false;
-  bool _isRecording = false;
-  final List<Offset> _recordedPoints = [];
+  bool _isOverlayEnabled = false;
+  int _selectedLoops = 0; // 0 = Infinite loop
+  bool _antiBanJitter = true;
 
   @override
   void initState() {
     super.initState();
-    _checkAccessibilityPermission();
+    WidgetsBinding.instance.addObserver(this);
+    _checkPermissions();
   }
 
-  Future<void> _checkAccessibilityPermission() async {
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkPermissions();
+    }
+  }
+
+  Future<void> _checkPermissions() async {
     try {
-      final bool? enabled = await _platform.invokeMethod<bool>('isAccessibilityEnabled');
+      final bool acc = await _channel.invokeMethod<bool>('isAccessibilityEnabled') ?? false;
+      final bool ovl = await _channel.invokeMethod<bool>('isOverlayEnabled') ?? false;
       if (mounted) {
         setState(() {
-          _isAccessibilityEnabled = enabled ?? false;
+          _isAccessibilityEnabled = acc;
+          _isOverlayEnabled = ovl;
         });
       }
-    } on PlatformException {
-      if (mounted) {
-        setState(() {
-          _isAccessibilityEnabled = false;
-        });
-      }
-    }
+    } on PlatformException catch (_) {}
   }
 
-  Future<void> _openAccessibilitySettings() async {
-    await _platform.invokeMethod('openAccessibilitySettings');
-  }
-
-  Future<void> _enterPipMode() async {
-    try {
-      await _platform.invokeMethod('enterPip');
-    } on PlatformException catch (e) {
-      debugPrint('Error entering PiP: ${e.message}');
-    }
-  }
-
-  Future<void> _playMacro() async {
-    if (_recordedPoints.isEmpty) return;
-
-    for (final point in _recordedPoints) {
-      await _platform.invokeMethod('dispatchTap', {
-        'x': point.dx,
-        'y': point.dy,
-      });
-      await Future.delayed(const Duration(milliseconds: 600));
-    }
+  Future<void> _startFloatingWidget() async {
+    if (!_isAccessibilityEnabled || !_isOverlayEnabled) return;
+    await _channel.invokeMethod('startFloatingService', {
+      'loops': _selectedLoops,
+      'antiBan': _antiBanJitter,
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final isPip = MediaQuery.of(context).size.width < 250;
-
-    if (isPip) {
-      return Scaffold(
-        body: Center(
-          child: IconButton(
-            iconSize: 40,
-            icon: const Icon(Icons.play_circle_fill, color: Colors.greenAccent),
-            onPressed: _playMacro,
-          ),
-        ),
-      );
-    }
+    final bool canLaunch = _isAccessibilityEnabled && _isOverlayEnabled;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Macro Action Runner'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.picture_in_picture_alt),
-            tooltip: 'Enter PiP',
-            onPressed: _enterPipMode,
-          ),
-        ],
+        title: const Text('macro'),
+        centerTitle: true,
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20.0),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Card(
               child: ListTile(
                 leading: Icon(
-                  _isAccessibilityEnabled ? Icons.check_circle : Icons.warning,
+                  _isOverlayEnabled ? Icons.check_circle : Icons.layers_clear,
+                  color: _isOverlayEnabled ? Colors.green : Colors.amber,
+                ),
+                title: const Text('1. Display Over Other Apps'),
+                subtitle: const Text('Allows floating controls to hover over games'),
+                trailing: ElevatedButton(
+                  onPressed: () => _channel.invokeMethod('openOverlaySettings'),
+                  child: Text(_isOverlayEnabled ? 'Enabled' : 'Grant'),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: ListTile(
+                leading: Icon(
+                  _isAccessibilityEnabled ? Icons.check_circle : Icons.accessibility_new,
                   color: _isAccessibilityEnabled ? Colors.green : Colors.amber,
                 ),
-                title: const Text('Accessibility Service'),
-                subtitle: Text(
-                  _isAccessibilityEnabled
-                      ? 'Enabled and ready to dispatch gestures'
-                      : 'Required to automate screen clicks',
-                ),
+                title: const Text('2. Accessibility Service'),
+                subtitle: const Text('Captures and replays your touch gestures'),
                 trailing: ElevatedButton(
-                  onPressed: _openAccessibilitySettings,
-                  child: const Text('Configure'),
+                  onPressed: () => _channel.invokeMethod('openAccessibilitySettings'),
+                  child: Text(_isAccessibilityEnabled ? 'Enabled' : 'Enable'),
                 ),
               ),
             ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapDown: (details) {
-                  if (_isRecording) {
-                    setState(() {
-                      _recordedPoints.add(details.localPosition);
-                    });
-                  }
-                },
-                child: Container(
-                  width: double.infinity,
-                  decoration: BoxDecoration(
-                    border: Border.all(color: Colors.white24),
-                    borderRadius: BorderRadius.circular(12),
-                    color: Colors.black12,
-                  ),
-                  child: Stack(
-                    children: [
-                      Center(
-                        child: Text(
-                          _isRecording
-                              ? 'Tap anywhere to record coordinates\nPoints: ${_recordedPoints.length}'
-                              : 'Tap "Record Action" to start',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.grey),
+            const SizedBox(height: 24),
+            const Text(
+              'Execution Settings',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amber),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Repeat Count:', style: TextStyle(fontSize: 15)),
+                        DropdownButton<int>(
+                          value: _selectedLoops,
+                          dropdownColor: Colors.grey[900],
+                          items: const [
+                            DropdownMenuItem(value: 0, child: Text('Infinite (∞)')),
+                            DropdownMenuItem(value: 1, child: Text('1 Loop')),
+                            DropdownMenuItem(value: 5, child: Text('5 Loops')),
+                            DropdownMenuItem(value: 10, child: Text('10 Loops')),
+                            DropdownMenuItem(value: 25, child: Text('25 Loops')),
+                            DropdownMenuItem(value: 50, child: Text('50 Loops')),
+                          ],
+                          onChanged: (val) {
+                            if (val != null) setState(() => _selectedLoops = val);
+                          },
                         ),
+                      ],
+                    ),
+                    const Divider(height: 20),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Anti-Ban Humanization'),
+                      subtitle: const Text(
+                        'Varies tap coordinates (±8px) and delay timings to avoid bot detection.',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
                       ),
-                      ..._recordedPoints.map(
-                        (p) => Positioned(
-                          left: p.dx - 12,
-                          top: p.dy - 12,
-                          child: const Icon(
-                            Icons.adjust,
-                            color: Colors.deepPurpleAccent,
-                            size: 24,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                      value: _antiBanJitter,
+                      onChanged: (val) => setState(() => _antiBanJitter = val),
+                    ),
+                  ],
                 ),
               ),
             ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              height: 54,
+              child: FilledButton.icon(
+                icon: const Icon(Icons.touch_app),
+                label: const Text(
+                  'Launch Floating Recorder',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                onPressed: canLaunch ? _startFloatingWidget : null,
+              ),
+            ),
             const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    icon: Icon(_isRecording ? Icons.stop : Icons.fiber_manual_record),
-                    label: Text(_isRecording ? 'Stop Recording' : 'Record Action'),
-                    onPressed: () {
-                      setState(() {
-                        if (!_isRecording) _recordedPoints.clear();
-                        _isRecording = !_isRecording;
-                      });
-                    },
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton.icon(
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text('Run Macro'),
-                    onPressed: _recordedPoints.isEmpty ? null : _playMacro,
-                  ),
-                ),
-              ],
+            const Text(
+              'Workflow:\n1. Open your game.\n2. Tap "● REC" on the floating bar and tap your actions normally.\n3. Tap "■ STOP" when done.\n4. Tap "▶ PLAY" to replay the recorded commands continuously.',
+              style: TextStyle(color: Colors.grey, fontSize: 13, height: 1.4),
             ),
           ],
         ),
