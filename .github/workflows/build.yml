@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Scaffold and Build Release APK
+    name: Build Release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -28,25 +28,53 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Scaffold Android Files
+      - name: Scaffold Clean Android Project
         run: |
+          # 1. Clean out any previous partial native builds
+          rm -rf android
+          
+          # 2. Back up user's application code
+          mkdir -p /tmp/user_backup
+          cp -r lib /tmp/user_backup/
+          cp pubspec.yaml /tmp/user_backup/
+          
+          # 3. Create fresh native scaffolding
           flutter create . --platforms=android --org=com.macro --project-name=macro_automator --overwrite
+          
+          # 4. Restore user's actual application code
+          rm -rf lib pubspec.yaml
+          cp -r /tmp/user_backup/lib ./
+          cp /tmp/user_backup/pubspec.yaml ./
 
-      - name: Configure Android Native Files via Python
+      - name: Configure Android Native Files
         run: |
           python3 - << 'EOF'
           import os
 
-          # 1. Update AndroidManifest.xml
-          manifest_path = "android/app/src/main/AndroidManifest.xml"
-          with open(manifest_path, "r") as f:
-            content = f.read()
+          # 1. Write clean, validated AndroidManifest.xml (No duplicate attributes)
+          manifest_content = '''<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:label="macro_automator"
+                  android:name="${applicationName}"
+                  android:icon="@mipmap/ic_launcher">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:theme="@style/LaunchTheme"
+                      android:supportsPictureInPicture="true"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <meta-data
+                          android:name="io.flutter.embedding.android.NormalTheme"
+                          android:resource="@style/NormalTheme" />
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
 
-          pip_flags = 'android:supportsPictureInPicture="true"\n            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"\n'
-          if 'supportsPictureInPicture' not in content:
-            content = content.replace('<activity', '<activity\n            ' + pip_flags)
-
-          service_entry = """
                   <service
                       android:name=".MacroAccessibilityService"
                       android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
@@ -58,31 +86,35 @@ jobs:
                           android:name="android.accessibilityservice.AccessibilityService"
                           android:resource="@xml/accessibility_service_config" />
                   </service>
-              </application>"""
-          if 'MacroAccessibilityService' not in content:
-            content = content.replace('</application>', service_entry)
 
-          with open(manifest_path, "w") as f:
-            f.write(content)
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
+              </application>
+          </manifest>'''
 
-          # 2. Create accessibility XML
-          os.makedirs("android/app/src/main/res/xml", exist_ok=True)
-          xml_content = """<?xml version="1.0" encoding="utf-8"?>
+          with open("android/app/src/main/AndroidManifest.xml", "w", encoding="utf-8") as f:
+              f.write(manifest_content.strip())
+
+          # 2. Write accessibility configuration XML
+          xml_content = '''<?xml version="1.0" encoding="utf-8"?>
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
               android:accessibilityEventTypes="typeAllMask"
               android:accessibilityFeedbackType="feedbackGeneric"
               android:accessibilityFlags="flagDefault"
               android:canPerformGestures="true"
               android:canRetrieveWindowContent="true"
-              android:notificationTimeout="100" />"""
-          with open("android/app/src/main/res/xml/accessibility_service_config.xml", "w") as f:
-            f.write(xml_content.strip())
+              android:notificationTimeout="100" />'''
 
-          # 3. Write Kotlin files
+          os.makedirs("android/app/src/main/res/xml", exist_ok=True)
+          with open("android/app/src/main/res/xml/accessibility_service_config.xml", "w", encoding="utf-8") as f:
+              f.write(xml_content.strip())
+
+          # 3. Write MainActivity.kt
           kotlin_dir = "android/app/src/main/kotlin/com/macro/macro_automator"
           os.makedirs(kotlin_dir, exist_ok=True)
 
-          main_activity = """package com.macro.macro_automator
+          main_activity = '''package com.macro.macro_automator
 
           import android.app.PictureInPictureParams
           import android.content.Intent
@@ -129,15 +161,18 @@ jobs:
                       }
                   }
               }
-          }"""
-          with open(os.path.join(kotlin_dir, "MainActivity.kt"), "w") as f:
-            f.write(main_activity)
+          }'''
 
-          service_code = """package com.macro.macro_automator
+          with open(os.path.join(kotlin_dir, "MainActivity.kt"), "w", encoding="utf-8") as f:
+              f.write(main_activity.strip())
+
+          # 4. Write MacroAccessibilityService.kt with API version guards
+          service_code = '''package com.macro.macro_automator
 
           import android.accessibilityservice.AccessibilityService
           import android.accessibilityservice.GestureDescription
           import android.graphics.Path
+          import android.os.Build
           import android.view.accessibility.AccessibilityEvent
 
           class MacroAccessibilityService : AccessibilityService() {
@@ -154,35 +189,39 @@ jobs:
               override fun onInterrupt() {}
 
               fun dispatchTap(x: Float, y: Float) {
-                  val path = Path().apply {
-                      moveTo(x, y)
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                      val path = Path().apply {
+                          moveTo(x, y)
+                      }
+                      val gesture = GestureDescription.Builder()
+                          .addStroke(GestureDescription.StrokeDescription(path, 0, 100))
+                          .build()
+                      dispatchGesture(gesture, null, null)
                   }
-                  val gesture = GestureDescription.Builder()
-                      .addStroke(GestureDescription.StrokeDescription(path, 0, 100))
-                      .build()
-                  dispatchGesture(gesture, null, null)
               }
 
               override fun onDestroy() {
                   super.onDestroy()
                   instance = null
               }
-          }"""
-          with open(os.path.join(kotlin_dir, "MacroAccessibilityService.kt"), "w") as f:
-            f.write(service_code)
-          print("Native configuration successfully injected!")
+          }'''
+
+          with open(os.path.join(kotlin_dir, "MacroAccessibilityService.kt"), "w", encoding="utf-8") as f:
+              f.write(service_code.strip())
+
+          print("Android native code successfully prepared.")
           EOF
 
       - name: Fetch Dependencies
         run: flutter pub get
 
       - name: Build Android Release APK
-        run: flutter build apk --release
+        run: flutter build apk --release --no-tree-shake-icons
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/*.apk
           retention-days: 14
           
