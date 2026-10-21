@@ -45,12 +45,18 @@ class _MacroHomePageState extends State<MacroHomePage> {
 
   Future<void> _checkAccessibilityPermission() async {
     try {
-      final bool enabled = await _platform.invokeMethod('isAccessibilityEnabled');
-      setState(() {
-        _isAccessibilityEnabled = enabled;
-      });
+      final bool? enabled = await _platform.invokeMethod<bool>('isAccessibilityEnabled');
+      if (mounted) {
+        setState(() {
+          _isAccessibilityEnabled = enabled ?? false;
+        });
+      }
     } on PlatformException {
-      _isAccessibilityEnabled = false;
+      if (mounted) {
+        setState(() {
+          _isAccessibilityEnabled = false;
+        });
+      }
     }
   }
 
