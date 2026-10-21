@@ -17,11 +17,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '17'
-          cache: 'gradle'
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -36,15 +35,15 @@ jobs:
       - name: Inject Accessibility and PiP
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
-          
-          # Enable PiP on MainActivity
+
+          # 1. Inject PiP and layout flags into MainActivity
           sed -i '/<activity/a \            android:supportsPictureInPicture="true"\n            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"' "$MANIFEST"
 
-          # Register AccessibilityService
+          # 2. Register MacroAccessibilityService inside <application>
           SERVICE_BLOCK='        <service\n            android:name=".MacroAccessibilityService"\n            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"\n            android:exported="true">\n            <intent-filter>\n                <action android:name="android.accessibilityservice.AccessibilityService" />\n            </intent-filter>\n            <meta-data\n                android:name="android.accessibilityservice.AccessibilityService"\n                android:resource="@xml/accessibility_service_config" />\n        </service>'
           sed -i "s|</application>|${SERVICE_BLOCK}\n    </application>|" "$MANIFEST"
 
-          # Create accessibility config XML
+          # 3. Create accessibility configuration XML
           mkdir -p android/app/src/main/res/xml
           cat << 'EOF' > android/app/src/main/res/xml/accessibility_service_config.xml
           <?xml version="1.0" encoding="utf-8"?>
@@ -57,11 +56,11 @@ jobs:
               android:notificationTimeout="100" />
           EOF
 
-          # Ensure Kotlin source directory matches package com.macro.macro_automator
+          # 4. Create package folder for Kotlin code
           KOTLIN_DIR="android/app/src/main/kotlin/com/macro/macro_automator"
           mkdir -p "$KOTLIN_DIR"
 
-          # Overwrite MainActivity.kt
+          # 5. Write MainActivity.kt
           cat << 'EOF' > "$KOTLIN_DIR/MainActivity.kt"
           package com.macro.macro_automator
 
@@ -113,7 +112,7 @@ jobs:
           }
           EOF
 
-          # Create MacroAccessibilityService.kt
+          # 6. Write MacroAccessibilityService.kt
           cat << 'EOF' > "$KOTLIN_DIR/MacroAccessibilityService.kt"
           package com.macro.macro_automator
 
