@@ -1,0 +1,167 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Scaffold and Build Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Scaffold Android Files
+        run: |
+          flutter create . --platforms=android --org=com.macro --project-name=macro_automator --overwrite
+
+      - name: Inject Accessibility and PiP
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          
+          # Enable PiP on MainActivity
+          sed -i '/<activity/a \            android:supportsPictureInPicture="true"\n            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"' "$MANIFEST"
+
+          # Register AccessibilityService
+          SERVICE_BLOCK='        <service\n            android:name=".MacroAccessibilityService"\n            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"\n            android:exported="true">\n            <intent-filter>\n                <action android:name="android.accessibilityservice.AccessibilityService" />\n            </intent-filter>\n            <meta-data\n                android:name="android.accessibilityservice.AccessibilityService"\n                android:resource="@xml/accessibility_service_config" />\n        </service>'
+          sed -i "s|</application>|${SERVICE_BLOCK}\n    </application>|" "$MANIFEST"
+
+          # Create accessibility config XML
+          mkdir -p android/app/src/main/res/xml
+          cat << 'EOF' > android/app/src/main/res/xml/accessibility_service_config.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="true"
+              android:notificationTimeout="100" />
+          EOF
+
+          # Ensure Kotlin source directory matches package com.macro.macro_automator
+          KOTLIN_DIR="android/app/src/main/kotlin/com/macro/macro_automator"
+          mkdir -p "$KOTLIN_DIR"
+
+          # Overwrite MainActivity.kt
+          cat << 'EOF' > "$KOTLIN_DIR/MainActivity.kt"
+          package com.macro.macro_automator
+
+          import android.app.PictureInPictureParams
+          import android.content.Intent
+          import android.os.Build
+          import android.provider.Settings
+          import android.util.Rational
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+
+          class MainActivity: FlutterActivity() {
+              private val CHANNEL = "com.macro.automator/actions"
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+                      when (call.method) {
+                          "isAccessibilityEnabled" -> {
+                              result.success(MacroAccessibilityService.instance != null)
+                          }
+                          "openAccessibilitySettings" -> {
+                              startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                              result.success(true)
+                          }
+                          "enterPip" -> {
+                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                  val params = PictureInPictureParams.Builder()
+                                      .setAspectRatio(Rational(1, 1))
+                                      .build()
+                                  enterPictureInPictureMode(params)
+                                  result.success(true)
+                              } else {
+                                  result.error("PIP_UNSUPPORTED", "Android O+ required for PiP", null)
+                              }
+                          }
+                          "dispatchTap" -> {
+                              val x = call.argument<Double>("x")?.toFloat() ?: 0f
+                              val y = call.argument<Double>("y")?.toFloat() ?: 0f
+                              MacroAccessibilityService.instance?.dispatchTap(x, y)
+                              result.success(true)
+                          }
+                          else -> result.notImplemented()
+                      }
+                  }
+              }
+          }
+          EOF
+
+          # Create MacroAccessibilityService.kt
+          cat << 'EOF' > "$KOTLIN_DIR/MacroAccessibilityService.kt"
+          package com.macro.macro_automator
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.graphics.Path
+          import android.view.accessibility.AccessibilityEvent
+
+          class MacroAccessibilityService : AccessibilityService() {
+              companion object {
+                  var instance: MacroAccessibilityService? = null
+              }
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+
+              fun dispatchTap(x: Float, y: Float) {
+                  val path = Path().apply {
+                      moveTo(x, y)
+                  }
+                  val gesture = GestureDescription.Builder()
+                      .addStroke(GestureDescription.StrokeDescription(path, 0, 100))
+                      .build()
+                  dispatchGesture(gesture, null, null)
+              }
+
+              override fun onDestroy() {
+                  super.onDestroy()
+                  instance = null
+              }
+          }
+          EOF
+
+      - name: Fetch Dependencies
+        run: flutter pub get
+
+      - name: Build Android Release APK
+        run: flutter build apk --release
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 14
+          
